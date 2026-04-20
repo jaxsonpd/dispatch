@@ -1,0 +1,20 @@
+[project]
+name = "dispatch"
+version = "0.1.0"
+description = "Modular daily PDF briefing system — assembles plugin sections into a PDF and emails it each morning."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv>=1.2.2",
+    "reportlab>=4.4.10",
+]
+ 
+[project.scripts]
+briefing = "dispatch.briefing:main"
+ 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+ 
+[tool.hatch.build.targets.wheel]
+packages = ["src/dispatch"]

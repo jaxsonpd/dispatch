@@ -1,0 +1,13 @@
+# Environment — never commit real credentials
+.env
+
+# uv / Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+dist/
+*.egg-info/
+
+# Generated output
+output/
