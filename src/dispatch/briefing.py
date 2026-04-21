@@ -671,7 +671,7 @@ def main() -> None:
     pdf_path = build_pdf(sections)
 
     log.info("Sending email…")
-    # send_email(pdf_path)
+    send_email(pdf_path)
 
     log.info("Done.")
 
