@@ -1,0 +1,28 @@
+# .github/workflows/briefing.yml
+name: Daily Briefing
+
+on:
+  schedule:
+    - cron: '0 19 * * *'  # 7:00 AM NZST (UTC+12) = 19:00 UTC previous day
+  workflow_dispatch:        # also allows manual trigger from the GitHub UI
+
+jobs:
+  send-briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run Dispatch
+        env:
+          SMTP_HOST:     ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:     ${{ secrets.SMTP_PORT }}
+          SMTP_USER:     ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO:      ${{ secrets.EMAIL_TO }}
+        run: uv run briefing
