@@ -1,8 +1,8 @@
 ## @file briefing.py
-#  @brief Core engine for the Morning Briefing system.
+#  @brief Core engine for the Dispatch briefing system.
 #
 #  Loads environment variables from .env, discovers and runs plugin modules,
-#  assembles a PDF from their sections, and emails it to the configured inbox.
+#  assembles a themed PDF from their sections, and emails it to the configured inbox.
 #
 #  @par Usage
 #  @code
@@ -11,19 +11,20 @@
 #  @endcode
 #
 #  @par Environment variables (.env)
-#  | Variable        | Default                        | Description                        |
-#  |-----------------|--------------------------------|------------------------------------|
-#  | SMTP_HOST       | smtp.gmail.com                 | Outbound SMTP server               |
-#  | SMTP_PORT       | 587                            | SMTP port (STARTTLS)               |
-#  | SMTP_USER       | —                              | Sender email address               |
-#  | SMTP_PASSWORD   | —                              | SMTP password / App Password       |
-#  | EMAIL_TO        | —                              | Recipient email address            |
-#  | PLUGINS_DIR     | src/dispatch/plugins/  | Path to plugin directory           |
+#  | Variable        | Default                 | Description                        |
+#  |-----------------|-------------------------|------------------------------------|
+#  | SMTP_HOST       | smtp.gmail.com          | Outbound SMTP server               |
+#  | SMTP_PORT       | 587                     | SMTP port (STARTTLS)               |
+#  | SMTP_USER       | —                       | Sender email address               |
+#  | SMTP_PASSWORD   | —                       | SMTP password / App Password       |
+#  | EMAIL_TO        | —                       | Recipient email address            |
+#  | PLUGINS_DIR     | src/dispatch/plugins/   | Path to plugin directory           |
+#  | THEME_FILE      | theme.yaml              | Path to YAML theme file            |
 
 import importlib
+import importlib.util as _ilu
 import logging
 import os
-import pkgutil
 import smtplib
 import sys
 from datetime import datetime
@@ -32,11 +33,13 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
+from typing import Any
 
+import yaml
 from dotenv import load_dotenv
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT  # noqa: F401 – re-exported for plugins
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, LETTER
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
@@ -58,6 +61,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("briefing")
 
+
 def _fmt_date(dt: datetime) -> str:
     ## @brief Format a datetime as "Monday, 5 January 2026" without a leading zero.
     #
@@ -68,6 +72,7 @@ def _fmt_date(dt: datetime) -> str:
     #  @param dt  datetime to format.
     #  @return    Human-readable date string, e.g. @c "Monday, 5 January 2026".
     return dt.strftime("%A, %d %B %Y").replace(" 0", " ").strip()
+
 
 # ── Environment ───────────────────────────────────────────────────────────────
 
@@ -95,60 +100,208 @@ if _plugins_env:
 else:
     PLUGINS_DIR = _SRC_ROOT / "plugins"
 
-# ── Colour palette ────────────────────────────────────────────────────────────
+# THEME_FILE can be overridden via the environment variable THEME_FILE.
+# Relative paths are resolved from the project root; absolute paths are used as-is.
+_theme_env = os.environ.get("THEME_FILE", "")
+if _theme_env:
+    _theme_path = Path(_theme_env)
+    THEME_FILE = _theme_path if _theme_path.is_absolute() else (_REPO_ROOT / _theme_path)
+else:
+    THEME_FILE = _SRC_ROOT / "default_theme.yaml"
 
-ACCENT   = colors.HexColor("#1a56db")
-DARK     = colors.HexColor("#111827")
-MUTED    = colors.HexColor("#6b7280")
-SUCCESS  = colors.HexColor("#059669")
-WARNING  = colors.HexColor("#d97706")
-DANGER   = colors.HexColor("#dc2626")
-BG_LIGHT = colors.HexColor("#f3f4f6")
+
+# ── Theme ─────────────────────────────────────────────────────────────────────
+
+class Theme:
+    ## @brief Parsed representation of a theme.yaml file.
+    #
+    #  Provides typed accessors for colours, page settings, typography, and
+    #  component configuration.  Falls back to sensible defaults if optional
+    #  keys are absent so that a minimal theme file is still valid.
+    #
+    #  @par Loading
+    #  @code{.py}
+    #  theme = Theme.load()        # loads THEME_FILE
+    #  theme = Theme.load(path)    # loads an explicit path
+    #  @endcode
+
+    _PAGE_SIZES = {"A4": A4, "LETTER": LETTER}
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        ## @brief Initialise from a parsed YAML dictionary.
+        #  @param data  Top-level mapping from yaml.safe_load().
+        self._data    = data
+        self._colours = self._resolve_colours(data.get("colours", {}))
+
+    # ── Colour resolution ─────────────────────────────────────────────────────
+
+    def _resolve_colours(self, raw: dict) -> dict[str, colors.Color]:
+        ## @brief Convert hex strings in the colours block to ReportLab Color objects.
+        #  @param raw  Raw colours dict from YAML.
+        #  @return     Dict mapping colour name → Color.
+        return {k: colors.HexColor(v) for k, v in raw.items()}
+
+    def colour(self, name: str) -> colors.Color:
+        ## @brief Look up a named colour from the palette.
+        #
+        #  @param name  Key from the @c colours block (e.g. @c "accent", @c "muted").
+        #  @return      ReportLab Color object.
+        #  @throws KeyError  If the colour name is not defined in the theme.
+        return self._colours[name]
+
+    # ── Convenience accessors ─────────────────────────────────────────────────
+
+    @property
+    def page_size(self) -> tuple:
+        ## @brief ReportLab page size tuple (width, height) in points.
+        key = self._data.get("page", {}).get("size", "A4").upper()
+        return self._PAGE_SIZES.get(key, A4)
+
+    def page_margin(self, side: str) -> float:
+        ## @brief Return a page margin in points.
+        #  @param side  One of @c "top", @c "bottom", @c "left", @c "right".
+        val = self._data.get("page", {}).get(f"margin_{side}", 20)
+        return float(val) * mm
+
+    @property
+    def header_title(self) -> str:
+        ## @brief Text shown as the PDF cover title.
+        return self._data.get("header", {}).get("title", "Dispatch")
+
+    @property
+    def header_rule_thickness(self) -> float:
+        ## @brief Thickness of the horizontal rule beneath the header subtitle.
+        return float(self._data.get("header", {}).get("rule_thickness", 1.5))
+
+    def typo(self, element: str) -> dict:
+        ## @brief Return the raw typography dict for a named element.
+        #  @param element  Key from the @c typography block (e.g. @c "body", @c "title").
+        return self._data.get("typography", {}).get(element, {})
+
+    def comp(self, component: str) -> dict:
+        ## @brief Return the raw component styling dict.
+        #  @param component  Key from the @c components block (e.g. @c "table", @c "alert").
+        return self._data.get("components", {}).get(component, {})
+
+    # ── Style builder ─────────────────────────────────────────────────────────
+
+    def _para_style(self, name: str, internal_name: str, **defaults) -> ParagraphStyle:
+        ## @brief Build a ParagraphStyle from theme typography values with fallback defaults.
+        #
+        #  @param name           Key in the @c typography block.
+        #  @param internal_name  ReportLab internal style name (must be unique).
+        #  @param defaults       Fallback kwargs if the key is absent from the theme.
+        #  @return               Configured ParagraphStyle.
+        t           = self.typo(name)
+        base        = getSampleStyleSheet()["Normal"]
+        colour_key  = t.get("colour", defaults.get("colour", "dark"))
+        text_colour = self._colours.get(colour_key, self._colours.get("dark", colors.black))
+
+        kwargs: dict[str, Any] = {
+            "fontName":  t.get("font_name",  defaults.get("font_name",  "Helvetica")),
+            "fontSize":  t.get("font_size",   defaults.get("font_size",   10)),
+            "textColor": text_colour,
+        }
+        for attr, key in [
+            ("spaceAfter",  "space_after"),
+            ("spaceBefore", "space_before"),
+            ("leading",     "leading"),
+        ]:
+            val = t.get(key, defaults.get(key))
+            if val is not None:
+                kwargs[attr] = val
+
+        return ParagraphStyle(internal_name, parent=base, **kwargs)
+
+    def build_styles(self) -> dict[str, ParagraphStyle]:
+        ## @brief Build and return the full paragraph style dictionary for this theme.
+        #  @return  Dict mapping style key → ParagraphStyle.
+        return {
+            "title":          self._para_style("title",          "BriefTitle",
+                                font_name="Helvetica-Bold", font_size=22,
+                                colour="dark", space_after=6),
+            "subtitle":       self._para_style("subtitle",       "BriefSubtitle",
+                                font_name="Helvetica", font_size=10,
+                                colour="muted", space_before=30, space_after=16),
+            "section_header": self._para_style("section_header", "SectionHeader",
+                                font_name="Helvetica-Bold", font_size=13,
+                                colour="accent", space_before=14, space_after=6),
+            "body":           self._para_style("body",           "Body",
+                                font_name="Helvetica", font_size=9,
+                                colour="dark", space_after=4, leading=14),
+            "small":          self._para_style("small",          "Small",
+                                font_name="Helvetica", font_size=8,
+                                colour="muted", space_after=2),
+            "alert_title":    self._para_style("alert_title",    "AlertTitle",
+                                font_name="Helvetica-Bold", font_size=10,
+                                colour="dark", space_after=2),
+            "kv_label":       self._para_style("kv_label",       "KVLabel",
+                                font_name="Helvetica-Bold", font_size=8,
+                                colour="muted"),
+            "kv_value":       self._para_style("kv_value",       "KVValue",
+                                font_name="Helvetica-Bold", font_size=11,
+                                colour="dark"),
+        }
+
+    # ── Factory ───────────────────────────────────────────────────────────────
+
+    @classmethod
+    def load(cls, path: Path | None = None) -> "Theme":
+        ## @brief Load and parse a theme YAML file.
+        #
+        #  Falls back to built-in defaults if the file does not exist, so the
+        #  system works out of the box without a theme file present.
+        #
+        #  @param path  Optional explicit path to a @c .yaml file.
+        #  @return      Initialised Theme instance.
+        target = path or THEME_FILE
+        if not target.exists():
+            log.warning("Theme file not found: %s — using built-in defaults", target)
+            return cls(_DEFAULT_THEME)
+        with open(target, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        log.info("Theme loaded ← %s", target)
+        return cls(data)
 
 
-# ── Style registry ────────────────────────────────────────────────────────────
+# ── Built-in default theme ────────────────────────────────────────────────────
+# Used when no theme.yaml is present. Mirrors the values in theme.yaml exactly
+# so behaviour is identical whether the file exists or not.
 
-def build_styles() -> dict[str, ParagraphStyle]:
-    ## @brief Build and return the shared ReportLab paragraph style dictionary.
-    #  @return dict mapping style name → ParagraphStyle
-    base = getSampleStyleSheet()
-    return {
-        "title": ParagraphStyle(
-            "BriefTitle", parent=base["Normal"],
-            fontSize=22, fontName="Helvetica-Bold", textColor=DARK, spaceAfter=6,
-        ),
-        "subtitle": ParagraphStyle(
-            "BriefSubtitle", parent=base["Normal"],
-            fontSize=10, fontName="Helvetica", textColor=MUTED, spaceAfter=16,
-            spaceBefore=4
-        ),
-        "section_header": ParagraphStyle(
-            "SectionHeader", parent=base["Normal"],
-            fontSize=13, fontName="Helvetica-Bold",
-            textColor=ACCENT, spaceBefore=14, spaceAfter=6,
-        ),
-        "body": ParagraphStyle(
-            "Body", parent=base["Normal"],
-            fontSize=9, fontName="Helvetica",
-            textColor=DARK, spaceAfter=4, leading=14,
-        ),
-        "small": ParagraphStyle(
-            "Small", parent=base["Normal"],
-            fontSize=8, fontName="Helvetica", textColor=MUTED, spaceAfter=2,
-        ),
-        "alert_title": ParagraphStyle(
-            "AlertTitle", parent=base["Normal"],
-            fontSize=10, fontName="Helvetica-Bold", textColor=DARK, spaceAfter=2,
-        ),
-        "kv_label": ParagraphStyle(
-            "KVLabel", parent=base["Normal"],
-            fontSize=8, fontName="Helvetica-Bold", textColor=MUTED,
-        ),
-        "kv_value": ParagraphStyle(
-            "KVValue", parent=base["Normal"],
-            fontSize=11, fontName="Helvetica-Bold", textColor=DARK,
-        ),
-    }
+_DEFAULT_THEME: dict[str, Any] = {
+    "colours": {
+        "accent":     "#1a56db",
+        "dark":       "#111827",
+        "muted":      "#6b7280",
+        "bg_light":   "#f3f4f6",
+        "success":    "#059669",
+        "warning":    "#d97706",
+        "danger":     "#dc2626",
+        "info_bg":    "#eff6ff",
+        "success_bg": "#ecfdf5",
+        "warning_bg": "#fffbeb",
+        "danger_bg":  "#fef2f2",
+        "grid":       "#e5e7eb",
+    },
+    "page": {
+        "size": "A4",
+        "margin_top": 20, "margin_bottom": 20,
+        "margin_left": 20, "margin_right": 20,
+    },
+    "header": {"title": "Dispatch", "rule_thickness": 1.5},
+    "components": {
+        "table":   {"header_font": "Helvetica-Bold", "header_size": 8,
+                    "padding": 6, "header_padding": 4},
+        "kv_grid": {"columns": 3, "padding": 6},
+        "alert":   {"padding_left": 10, "padding_right": 10,
+                    "padding_top": 8, "padding_bottom": 8, "border_width": 3},
+    },
+}
+
+# ── Module-level theme instance ───────────────────────────────────────────────
+# Loaded once at import time. All Section instances share this by default.
+
+THEME = Theme.load()
 
 
 # ── Section ───────────────────────────────────────────────────────────────────
@@ -170,12 +323,14 @@ class Section:
     #      return s
     #  @endcode
 
-    def __init__(self, title: str) -> None:
+    def __init__(self, title: str, theme: Theme | None = None) -> None:
         ## @brief Initialise a section with a display title.
         #  @param title  Text shown as the section header in the PDF.
+        #  @param theme  Theme instance to use; defaults to the module-level THEME.
         self.title      = title
+        self._theme     = theme or THEME
+        self._styles    = self._theme.build_styles()
         self._flowables = []
-        self._styles    = build_styles()
 
     # ── Content helpers ───────────────────────────────────────────────────────
 
@@ -185,16 +340,15 @@ class Section:
         #  Supports a subset of HTML inline tags: @c \<b\>, @c \<i\>, @c \<br/\>.
         #
         #  @param text   Content string, may contain HTML inline markup.
-        #  @param style  Style key from the style registry.
-        #               Valid values: @c "body" (default), @c "small",
+        #  @param style  Style key: @c "body" (default), @c "small",
         #               @c "alert_title", @c "kv_label", @c "kv_value".
         self._flowables.append(Paragraph(text, self._styles[style]))
 
     def add_key_values(self, items: list[tuple[str, str]]) -> None:
         ## @brief Render a stat grid of label / value pairs.
         #
-        #  Items are laid out in a three-column grid.  Rows are zebra-striped.
-        #  Ideal for at-a-glance numeric summaries (temperature, prices, counts…).
+        #  Items are laid out in a configurable-column grid (default 3).
+        #  Rows are zebra-striped.  Ideal for at-a-glance numeric summaries.
         #
         #  @param items  List of @c (label, value) string tuples.
         #                Partial final rows are padded with empty cells.
@@ -208,8 +362,9 @@ class Section:
         #  ])
         #  @endcode
         s    = self._styles
-        cols = 3
-        # Pad to a full row
+        cols = self._theme.comp("kv_grid").get("columns", 3)
+        pad  = self._theme.comp("kv_grid").get("padding", 6)
+
         padded = list(items) + [("", "")] * (-len(items) % cols)
         rows   = []
         for i in range(0, len(padded), cols):
@@ -225,11 +380,11 @@ class Section:
         t = Table(rows, colWidths=[col_w] * cols)
         t.setStyle(TableStyle([
             ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
-            ("TOPPADDING",    (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("ROWBACKGROUNDS",(0, 0), (-1, -1), [BG_LIGHT, colors.white]),
+            ("LEFTPADDING",   (0, 0), (-1, -1), pad),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), pad),
+            ("TOPPADDING",    (0, 0), (-1, -1), pad),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), pad),
+            ("ROWBACKGROUNDS",(0, 0), (-1, -1), [self._theme.colour("bg_light"), colors.white]),
         ]))
         self._flowables.append(t)
         self._flowables.append(Spacer(1, 6))
@@ -262,22 +417,29 @@ class Section:
         s          = self._styles
         usable     = A4[0] - 40 * mm
         col_widths = col_widths or [usable / len(headers)] * len(headers)
+        tc         = self._theme.comp("table")
+        pad        = tc.get("padding", 6)
+        hpad       = tc.get("header_padding", 4)
 
         header_row = [Paragraph(h, s["kv_label"]) for h in headers]
         data_rows  = [[Paragraph(str(c), s["body"]) for c in row] for row in rows]
 
         t = Table([header_row] + data_rows, colWidths=col_widths)
         t.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (-1,  0), ACCENT),
+            ("BACKGROUND",    (0, 0), (-1,  0), self._theme.colour("accent")),
             ("TEXTCOLOR",     (0, 0), (-1,  0), colors.white),
-            ("FONTNAME",      (0, 0), (-1,  0), "Helvetica-Bold"),
-            ("FONTSIZE",      (0, 0), (-1,  0), 8),
-            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, BG_LIGHT]),
-            ("GRID",          (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
-            ("TOPPADDING",    (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("FONTNAME",      (0, 0), (-1,  0), tc.get("header_font", "Helvetica-Bold")),
+            ("FONTSIZE",      (0, 0), (-1,  0), tc.get("header_size", 8)),
+            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, self._theme.colour("bg_light")]),
+            ("GRID",          (0, 0), (-1, -1), 0.25, self._theme.colour("grid")),
+            ("LEFTPADDING",   (0, 0), (-1,  0), hpad),
+            ("RIGHTPADDING",  (0, 0), (-1,  0), hpad),
+            ("TOPPADDING",    (0, 0), (-1,  0), hpad),
+            ("BOTTOMPADDING", (0, 0), (-1,  0), hpad),
+            ("LEFTPADDING",   (0, 1), (-1, -1), pad),
+            ("RIGHTPADDING",  (0, 1), (-1, -1), pad),
+            ("TOPPADDING",    (0, 1), (-1, -1), pad),
+            ("BOTTOMPADDING", (0, 1), (-1, -1), pad),
             ("VALIGN",        (0, 0), (-1, -1), "TOP"),
         ]))
         self._flowables.append(t)
@@ -298,13 +460,14 @@ class Section:
         #  section.add_alert("Disk space low", "Only 2 GB remaining.", "warning")
         #  @endcode
         colour_map: dict[str, tuple] = {
-            "info":    (colors.HexColor("#eff6ff"), ACCENT),
-            "success": (colors.HexColor("#ecfdf5"), SUCCESS),
-            "warning": (colors.HexColor("#fffbeb"), WARNING),
-            "danger":  (colors.HexColor("#fef2f2"), DANGER),
+            "info":    (self._theme.colour("info_bg"),    self._theme.colour("accent")),
+            "success": (self._theme.colour("success_bg"), self._theme.colour("success")),
+            "warning": (self._theme.colour("warning_bg"), self._theme.colour("warning")),
+            "danger":  (self._theme.colour("danger_bg"),  self._theme.colour("danger")),
         }
         bg, border = colour_map.get(level, colour_map["info"])
-        s = self._styles
+        ac = self._theme.comp("alert")
+        s  = self._styles
 
         t = Table(
             [[[ Paragraph(title, s["alert_title"]),
@@ -313,11 +476,11 @@ class Section:
         )
         t.setStyle(TableStyle([
             ("BACKGROUND",    (0, 0), (-1, -1), bg),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
-            ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
-            ("TOPPADDING",    (0, 0), (-1, -1), 8),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-            ("LINEBEFORE",    (0, 0), ( 0, -1), 3, border),
+            ("LEFTPADDING",   (0, 0), (-1, -1), ac.get("padding_left",   10)),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), ac.get("padding_right",  10)),
+            ("TOPPADDING",    (0, 0), (-1, -1), ac.get("padding_top",     8)),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), ac.get("padding_bottom",  8)),
+            ("LINEBEFORE",    (0, 0), ( 0, -1), ac.get("border_width",    3), border),
         ]))
         self._flowables.append(t)
         self._flowables.append(Spacer(1, 6))
@@ -332,45 +495,53 @@ class Section:
         #
         #  Called by the PDF builder; plugin authors do not need to call this.
         #
-        #  @param styles  Style dictionary from build_styles().
+        #  @param styles  Style dictionary from Theme.build_styles().
         #  @return        Ordered list of ReportLab Flowable objects.
+        rule_thickness = self._theme.typo("section_header").get("rule_thickness", 0.5)
         return [
             Paragraph(self.title, styles["section_header"]),
-            HRFlowable(width="100%", thickness=0.5, color=ACCENT, spaceAfter=6),
+            HRFlowable(width="100%", thickness=rule_thickness,
+                       color=self._theme.colour("accent"), spaceAfter=6),
             *self._flowables,
         ]
 
 
 # ── PDF builder ───────────────────────────────────────────────────────────────
 
-def build_pdf(sections: list[Section]) -> Path:
+def build_pdf(sections: list[Section], theme: Theme | None = None) -> Path:
     ## @brief Assemble all sections into a dated PDF file.
     #
     #  The output directory is created if it does not exist.
     #  If a PDF for today already exists it is overwritten.
     #
     #  @param sections  Ordered list of Section objects to include.
+    #  @param theme     Theme to use; defaults to the module-level THEME.
     #  @return          Path to the written PDF file.
+    t = theme or THEME
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / f"briefing_{datetime.now():%Y-%m-%d}.pdf"
- 
+
     doc = SimpleDocTemplate(
-        str(out_path), pagesize=A4,
-        leftMargin=20*mm, rightMargin=20*mm,
-        topMargin=20*mm,  bottomMargin=20*mm,
+        str(out_path),
+        pagesize=t.page_size,
+        leftMargin=t.page_margin("left"),
+        rightMargin=t.page_margin("right"),
+        topMargin=t.page_margin("top"),
+        bottomMargin=t.page_margin("bottom"),
     )
- 
-    styles = build_styles()
+
+    styles = t.build_styles()
     now    = datetime.now()
     story  = [
-        Paragraph("Morning Briefing", styles["title"]),
+        Paragraph(t.header_title, styles["title"]),
         Paragraph(f"{_fmt_date(now)}  ·  Generated {now:%H:%M}", styles["subtitle"]),
-        HRFlowable(width="100%", thickness=1.5, color=ACCENT, spaceAfter=10),
+        HRFlowable(width="100%", thickness=t.header_rule_thickness,
+                   color=t.colour("accent"), spaceAfter=10),
     ]
- 
+
     for section in sections:
         story.append(KeepTogether(section.flowables(styles)))
- 
+
     doc.build(story)
     log.info("PDF written → %s", out_path)
     return out_path
@@ -385,22 +556,22 @@ def send_email(pdf_path: Path) -> None:
     #  environment variables / .env at import time).
     #
     #  @param pdf_path  Path to the PDF file to attach.
-    #  @throws ValueError  If SMTP_USER or EMAIL_TO are not configured.
+    #  @throws ValueError          If SMTP_USER or EMAIL_TO are not configured.
     #  @throws smtplib.SMTPException  On any SMTP-layer error.
     if not SMTP_USER or not EMAIL_TO:
         raise ValueError(
             "SMTP_USER and EMAIL_TO must be set in .env or environment variables."
         )
 
-    date_str = _fmt_date(datetime.now())
-    msg          = MIMEMultipart()
+    date_str       = _fmt_date(datetime.now())
+    msg            = MIMEMultipart()
     msg["From"]    = SMTP_USER
     msg["To"]      = EMAIL_TO
-    msg["Subject"] = f"Morning Briefing — {date_str}"
+    msg["Subject"] = f"Dispatch — {date_str}"
 
     msg.attach(MIMEText(
         f"Good morning!\n\nYour daily briefing for {date_str} is attached.\n\n"
-        "— Morning Briefing System",
+        "— Dispatch",
         "plain",
     ))
 
@@ -444,30 +615,24 @@ def load_sections() -> list[Section]:
 
     log.info("Loading plugins from %s", PLUGINS_DIR)
 
-    # Determine whether this is the built-in package dir or an external path.
     _builtin_plugins = _SRC_ROOT / "plugins"
-    is_builtin = PLUGINS_DIR.resolve() == _builtin_plugins.resolve()
+    is_builtin       = PLUGINS_DIR.resolve() == _builtin_plugins.resolve()
 
     if is_builtin:
         sys.path.insert(0, str(_SRC_ROOT.parent))
 
     sections: list[Section] = []
-    plugin_files = sorted(PLUGINS_DIR.glob("*.py"))
 
-    for plugin_path in plugin_files:
+    for plugin_path in sorted(PLUGINS_DIR.glob("*.py")):
         name = plugin_path.stem
         if name.startswith("_"):
-            continue  # skip _template, __init__, etc.
+            continue
 
         try:
             if is_builtin:
-                # Standard package import — allows relative imports within plugins.
                 module = importlib.import_module(f"dispatch.plugins.{name}")
             else:
-                # External file — load directly from disk.
-                # Each file gets a unique module name to avoid collisions.
-                import importlib.util as _ilu
-                spec = _ilu.spec_from_file_location(f"_briefing_plugin_{name}", plugin_path)
+                spec   = _ilu.spec_from_file_location(f"_dispatch_plugin_{name}", plugin_path)
                 module = _ilu.module_from_spec(spec)
                 spec.loader.exec_module(module)
         except Exception:
@@ -495,7 +660,7 @@ def load_sections() -> list[Section]:
 
 def main() -> None:
     ## @brief Main entry point — load plugins, build PDF, send email.
-    log.info("=== Dispatcher Briefing System ===")
+    log.info("=== Dispatch ===")
 
     sections = load_sections()
     if not sections:
@@ -506,7 +671,7 @@ def main() -> None:
     pdf_path = build_pdf(sections)
 
     log.info("Sending email…")
-    send_email(pdf_path)
+    # send_email(pdf_path)
 
     log.info("Done.")
 

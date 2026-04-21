@@ -1,0 +1,95 @@
+colours:
+  accent:   "#222222"
+  dark:     "#111111"
+  muted:    "#777777"
+  bg_light: "#f4f4f4"
+  success:  "#333333"
+  warning:  "#555555"
+  danger:   "#222222"
+  info_bg:    "#efefef"
+  success_bg: "#eaeaea"
+  warning_bg: "#e6e6e6"
+  danger_bg:  "#e2e2e2"
+  grid:     "#cccccc"
+
+page:
+  size: A4
+  margin_top:    22
+  margin_bottom: 22
+  margin_left:   24
+  margin_right:  24
+
+header:
+  title: "Bulletin"
+  rule_thickness: 2.0
+
+typography:
+
+  title:
+    font_name:   "Courier-Bold"
+    font_size:   26
+    colour:      dark
+    space_after: 26
+
+  subtitle:
+    font_name:    "Courier-Oblique"
+    font_size:    11
+    colour:       muted
+    space_before: 4
+    space_after:  12
+
+  section_header:
+    font_name:      "Courier-Bold"
+    font_size:      14
+    colour:         accent
+    space_before:   16
+    space_after:    6
+    rule_thickness: 0.75
+
+  body:
+    font_name:   "Courier"
+    font_size:   10
+    colour:      dark
+    space_after: 5
+    leading:     15
+
+  small:
+    font_name:   "Courier-Oblique"
+    font_size:   9
+    colour:      muted
+    space_after: 3
+
+  alert_title:
+    font_name:   "Courier-Bold"
+    font_size:   10
+    colour:      dark
+    space_after: 2
+
+  kv_label:
+    font_name: "Courier-Bold"
+    font_size: 8
+    colour:    muted
+
+  kv_value:
+    font_name: "Courier-Bold"
+    font_size: 12
+    colour:    dark
+
+components:
+
+  table:
+    header_font:    "Courier-Bold"
+    header_size:    9
+    padding:        7
+    header_padding: 5
+
+  kv_grid:
+    columns: 3
+    padding: 8
+
+  alert:
+    padding_left:   12
+    padding_right:  12
+    padding_top:    9
+    padding_bottom: 9
+    border_width:   4
