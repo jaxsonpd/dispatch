@@ -594,7 +594,8 @@ def send_email(pdf_path: Path) -> None:
 # ── Plugin loader ─────────────────────────────────────────────────────────────
 
 def load_sections() -> list[Section]:
-    ## @brief Discover and run all plugin modules in the configured plugins directory.
+    ## @brief Discover and run all plugin modules from the built-in plugins directory
+    #         and any additional directories specified in environment variables.
     #
     #  A valid plugin is any @c .py file that exposes a top-level @c get_section()
     #  callable.  Files beginning with @c _ are skipped (reserved for templates and
@@ -602,56 +603,77 @@ def load_sections() -> list[Section]:
     #  conditional alerts).  Exceptions raised by individual plugins are caught and
     #  logged so that one broken plugin cannot abort the entire briefing.
     #
-    #  The directory is resolved from the @c PLUGINS_DIR environment variable, or
-    #  defaults to the built-in @c src/dispatch/plugins/ package.  External
-    #  directories (outside the installed package) are loaded directly from the
-    #  filesystem using @c importlib.util so no special package structure is needed —
-    #  just plain @c .py files with a @c get_section() function.
+    #  Plugins are always loaded from the built-in @c src/dispatch/plugins/ package
+    #  first, followed by any directories listed in the @c PLUGINS_DIR environment
+    #  variable (colon-separated on Unix, semicolon-separated on Windows).  External
+    #  directories are loaded directly from the filesystem using @c importlib.util so
+    #  no special package structure is needed — just plain @c .py files with a
+    #  @c get_section() function.  If a plugin filename exists in multiple directories,
+    #  later directories take precedence (their section replaces the earlier one).
     #
-    #  @return  List of Section objects in filename-alphabetical order.
-    if not PLUGINS_DIR.exists():
-        log.error("Plugins directory not found: %s", PLUGINS_DIR)
-        return []
-
-    log.info("Loading plugins from %s", PLUGINS_DIR)
+    #  @return  List of Section objects, built-in plugins first then extra dirs in
+    #           order, each group sorted alphabetically by filename.
 
     _builtin_plugins = _SRC_ROOT / "plugins"
-    is_builtin       = PLUGINS_DIR.resolve() == _builtin_plugins.resolve()
 
-    if is_builtin:
-        sys.path.insert(0, str(_SRC_ROOT.parent))
+    # Build the ordered list of (path, is_builtin) directories to search.
+    dirs: list[tuple[Path, bool]] = []
+
+    if _builtin_plugins.exists():
+        dirs.append((_builtin_plugins, True))
+    else:
+        log.warning("Built-in plugins directory not found: %s", _builtin_plugins)
+
+    extra_dirs_env = os.environ.get("PLUGINS_DIR", "")
+    if extra_dirs_env:
+        for raw in extra_dirs_env.split(os.pathsep):
+            p = Path(raw.strip())
+            if p.exists():
+                dirs.append((p, False))
+            else:
+                log.warning("Extra plugins directory not found (PLUGINS_DIR): %s", p)
+
+    if not dirs:
+        log.error("No plugins directories available.")
+        return []
+
+    # Ensure the package root is on sys.path for built-in import_module calls.
+    sys.path.insert(0, str(_SRC_ROOT.parent))
 
     sections: list[Section] = []
 
-    for plugin_path in sorted(PLUGINS_DIR.glob("*.py")):
-        name = plugin_path.stem
-        if name.startswith("_"):
-            continue
+    for plugins_dir, is_builtin in dirs:
+        log.info("Loading plugins from %s", plugins_dir)
 
-        try:
-            if is_builtin:
-                module = importlib.import_module(f"dispatch.plugins.{name}")
-            else:
-                spec   = _ilu.spec_from_file_location(f"_dispatch_plugin_{name}", plugin_path)
-                module = _ilu.module_from_spec(spec)
-                spec.loader.exec_module(module)
-        except Exception:
-            log.exception("Plugin import failed  ✗  %s", name)
-            continue
+        for plugin_path in sorted(plugins_dir.glob("*.py")):
+            name = plugin_path.stem
+            if name.startswith("_"):
+                continue
 
-        if not hasattr(module, "get_section"):
-            log.debug("Skipping %s — no get_section()", name)
-            continue
+            try:
+                if is_builtin:
+                    module = importlib.import_module(f"dispatch.plugins.{name}")
+                else:
+                    spec   = _ilu.spec_from_file_location(f"_dispatch_plugin_{name}", plugin_path)
+                    module = _ilu.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+            except Exception:
+                log.exception("Plugin import failed  ✗  %s  (%s)", name, plugins_dir)
+                continue
 
-        try:
-            section = module.get_section()
-            if section is not None:
-                sections.append(section)
-                log.info("Plugin loaded  ✓  %s", name)
-            else:
-                log.info("Plugin skipped    %s  (returned None)", name)
-        except Exception:
-            log.exception("Plugin failed  ✗  %s", name)
+            if not hasattr(module, "get_section"):
+                log.debug("Skipping %s — no get_section()", name)
+                continue
+
+            try:
+                section = module.get_section()
+                if section is not None:
+                    sections.append(section)
+                    log.info("Plugin loaded  ✓  %s  (%s)", name, plugins_dir)
+                else:
+                    log.info("Plugin skipped    %s  (returned None)", name)
+            except Exception:
+                log.exception("Plugin failed  ✗  %s  (%s)", name, plugins_dir)
 
     return sections
 
