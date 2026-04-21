@@ -78,8 +78,8 @@ def _fmt_date(dt: datetime) -> str:
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")  # project root .env
 
-SMTP_HOST     = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT     = int(os.environ.get("SMTP_PORT", 587))
+SMTP_HOST     = os.environ.get("SMTP_HOST") or "smtp.gmail.com"
+SMTP_PORT     = int(os.environ.get("SMTP_PORT") or 587)
 SMTP_USER     = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 EMAIL_TO      = os.environ.get("EMAIL_TO", "")
