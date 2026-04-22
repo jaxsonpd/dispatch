@@ -1,86 +1,86 @@
 colours:
-  accent:   "#222222"
-  dark:     "#111111"
-  muted:    "#777777"
-  bg_light: "#f4f4f4"
-  success:  "#333333"
-  warning:  "#555555"
-  danger:   "#222222"
-  info_bg:    "#efefef"
-  success_bg: "#eaeaea"
-  warning_bg: "#e6e6e6"
-  danger_bg:  "#e2e2e2"
-  grid:     "#cccccc"
+  accent:     "#e9d9c2"
+  dark:       "#1A0F0A"
+  muted:      "#6B5744"
+  bg_light:   "#e9d9c2"
+  success:    "#2C4A2C"
+  warning:    "#5C3D1A"
+  danger:     "#5C1A1A"
+  info_bg:    "#EDE8D0"
+  success_bg: "#E8EDE0"
+  warning_bg: "#EDE4D0"
+  danger_bg:  "#EDE0D0"
+  grid:       "#C8B89A"
 
 page:
   size: A4
-  margin_top:    22
-  margin_bottom: 22
-  margin_left:   24
-  margin_right:  24
+  margin_top:    5
+  margin_bottom: 5
+  margin_left:   8
+  margin_right:  8
 
 header:
   title: "Bulletin"
-  rule_thickness: 2.0
+  rule_thickness: 3.0
 
 typography:
 
   title:
-    font_name:   "Courier-Bold"
-    font_size:   26
+    font_name:   "Times-Bold"
+    font_size:   42
     colour:      dark
-    space_after: 26
+    space_after: 36
 
   subtitle:
-    font_name:    "Courier-Oblique"
+    font_name:    "Times-Italic"
     font_size:    11
     colour:       muted
-    space_before: 4
-    space_after:  12
+    space_before: 16
+    space_after:  10
 
   section_header:
-    font_name:      "Courier-Bold"
-    font_size:      14
-    colour:         accent
-    space_before:   16
-    space_after:    6
-    rule_thickness: 0.75
+    font_name:      "Times-Bold"
+    font_size:      11
+    colour:         dark
+    space_before:   14
+    space_after:    4
+    rule_thickness: 1.5
 
   body:
-    font_name:   "Courier"
+    font_name:   "Times-Roman"
     font_size:   10
     colour:      dark
-    space_after: 5
-    leading:     15
+    space_after: 4
+    leading:     16
 
   small:
-    font_name:   "Courier-Oblique"
-    font_size:   9
+    font_name:   "Times-Italic"
+    font_size:   8
     colour:      muted
     space_after: 3
 
   alert_title:
-    font_name:   "Courier-Bold"
+    font_name:   "Times-BoldItalic"
     font_size:   10
     colour:      dark
-    space_after: 2
+    space_after: 3
 
   kv_label:
-    font_name: "Courier-Bold"
-    font_size: 8
+    font_name: "Times-Italic"
+    font_size: 7
     colour:    muted
 
   kv_value:
-    font_name: "Courier-Bold"
-    font_size: 12
+    font_name: "Times-Bold"
+    font_size: 11
     colour:    dark
 
 components:
 
   table:
-    header_font:    "Courier-Bold"
+    header_font:    "Times-Bold"
     header_size:    9
-    padding:        7
+    padding:        6
     header_padding: 5
 
   kv_grid:
@@ -90,6 +90,6 @@ components:
   alert:
     padding_left:   12
     padding_right:  12
-    padding_top:    9
-    padding_bottom: 9
-    border_width:   4
+    padding_top:    8
+    padding_bottom: 8
+    border_width:   2
