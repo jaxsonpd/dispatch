@@ -93,7 +93,8 @@ OUTPUT_DIR = _REPO_ROOT / "output"
 
 # PLUGINS_DIR can be overridden via the environment variable PLUGINS_DIR.
 # Relative paths are resolved from the project root; absolute paths are used as-is.
-_plugins_env = os.environ.get("PLUGINS_DIR", "")
+_plugins_env = os.environ.get("PLUGINS_DIR", "plugins")
+print(_plugins_env)
 if _plugins_env:
     _plugins_path = Path(_plugins_env)
     PLUGINS_DIR = _plugins_path if _plugins_path.is_absolute() else (_REPO_ROOT / _plugins_path)
@@ -624,9 +625,8 @@ def load_sections() -> list[Section]:
     else:
         log.warning("Built-in plugins directory not found: %s", _builtin_plugins)
 
-    extra_dirs_env = os.environ.get("PLUGINS_DIR", "")
-    if extra_dirs_env:
-        for raw in extra_dirs_env.split(os.pathsep):
+    if _plugins_env:
+        for raw in _plugins_env.split(os.pathsep):
             p = Path(raw.strip())
             if p.exists():
                 dirs.append((p, False))
